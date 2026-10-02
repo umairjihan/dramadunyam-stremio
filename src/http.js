@@ -1,8 +1,13 @@
 // HTTP client with automated ticket/cookie acquisition for DramaDünyam.
-// Handles session cookies (dd_bilet), 412 renewal, and browser headers.
+// Routes requests through SOCKS5 proxy if SOCKS_PROXY is configured.
+
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 const BASE_URL = 'https://dramadunyam.com';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+const SOCKS_PROXY = process.env.SOCKS_PROXY || '';
+const agent = SOCKS_PROXY ? new SocksProxyAgent(SOCKS_PROXY) : undefined;
 
 let currentCookie = null;
 let cookieExpiresAt = 0;
@@ -24,6 +29,7 @@ export async function ensureCookie(forceRefresh = false) {
         'Accept': 'application/json, text/plain, */*',
         'Referer': `${BASE_URL}/en`,
       },
+      agent,
     });
     const sc = res.headers.get('set-cookie');
     if (sc) {
@@ -47,7 +53,7 @@ export async function fetchApi(path, retryOn412 = true) {
   };
   if (cookie) headers['Cookie'] = cookie;
 
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, { headers, agent });
 
   if (res.status === 412 && retryOn412) {
     await ensureCookie(true);
@@ -71,7 +77,7 @@ export async function fetchTextWithCookie(url, retryOn412 = true) {
   };
   if (cookie) headers['Cookie'] = cookie;
 
-  const res = await fetch(fullUrl, { headers });
+  const res = await fetch(fullUrl, { headers, agent });
 
   if (res.status === 412 && retryOn412) {
     await ensureCookie(true);
