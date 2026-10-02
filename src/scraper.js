@@ -10,6 +10,19 @@ function cleanPoster(cover) {
   return `${DD_ORIGIN}${cover.startsWith('/') ? '' : '/'}${cover}`;
 }
 
+function cleanGenres(raw) {
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  return list
+    .map((g) => {
+      if (typeof g === 'object' && g !== null) {
+        return g.name || g.slug || '';
+      }
+      return String(g || '');
+    })
+    .filter(Boolean);
+}
+
 export function idToSlug(stremioId) {
   // Format: dd:<slug> or dd:<slug>:1:5
   if (!stremioId.startsWith('dd:')) return null;
@@ -145,6 +158,7 @@ export async function searchSeries(query) {
 
 function formatCatalogItem(item) {
   const slug = item.slug || item.id;
+  const genres = cleanGenres(item.tags || item.genre);
   return {
     id: `dd:${slug}`,
     type: 'series',
@@ -152,7 +166,7 @@ function formatCatalogItem(item) {
     poster: cleanPoster(item.cover),
     posterShape: 'poster',
     description: item.description || (item.platform ? `Platform: ${item.platform}` : undefined),
-    genres: Array.isArray(item.tags) ? item.tags : undefined,
+    genres: genres.length ? genres : undefined,
   };
 }
 
@@ -166,6 +180,7 @@ export async function getSeriesMeta(slug) {
 
       const totalEpisodes = Number(data.available_episodes || data.total_episodes || data.episodes_in_db || 1);
       const videos = [];
+      const poster = cleanPoster(data.cover);
 
       for (let i = 1; i <= totalEpisodes; i++) {
         videos.push({
@@ -174,17 +189,21 @@ export async function getSeriesMeta(slug) {
           season: 1,
           episode: i,
           number: i,
+          thumbnail: poster || undefined,
         });
       }
+
+      const genres = cleanGenres(data.tags || data.genre);
 
       return {
         id: `dd:${slug}`,
         type: 'series',
         name: data.title,
-        poster: cleanPoster(data.cover),
-        background: cleanPoster(data.cover),
+        poster: poster || undefined,
+        background: poster || undefined,
+        logo: poster || undefined,
         description: data.description || `${data.title} (${data.platform || 'Short Drama'})`,
-        genres: Array.isArray(data.tags) ? data.tags : (data.genre ? [data.genre] : []),
+        genres: genres.length ? genres : undefined,
         releaseInfo: data.release_date || undefined,
         videos,
       };
@@ -217,7 +236,6 @@ export async function resolveEpisodeStream(slug, episodeNum) {
         return null;
       }
 
-      // Rewrite relative segment paths if any, or return master/segments
       return {
         playlist: playlistText,
         directUrl: `${DD_ORIGIN}${hlsPath}`,
