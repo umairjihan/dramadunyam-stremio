@@ -1,6 +1,8 @@
 // HTTP client with automated ticket/cookie acquisition for DramaDünyam.
-// Routes requests through SOCKS5 proxy if SOCKS_PROXY is configured.
+// Routes requests through SOCKS5 proxy via https/http modules when SOCKS_PROXY is set.
 
+import https from 'node:https';
+import http from 'node:http';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
 const BASE_URL = 'https://dramadunyam.com';
@@ -16,6 +18,49 @@ export function log(...args) {
   console.log('[dramadunyam]', ...args);
 }
 
+function doRequest(urlStr, options = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const isHttps = u.protocol === 'https:';
+    const client = isHttps ? https : http;
+
+    const reqOpts = {
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      agent: agent || undefined,
+      timeout: options.timeoutMs || 10000,
+    };
+
+    const req = client.request(reqOpts, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const bodyBuf = Buffer.concat(chunks);
+        const bodyText = bodyBuf.toString('utf8');
+        resolve({
+          status: res.statusCode,
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          headers: res.headers,
+          text: async () => bodyText,
+          json: async () => JSON.parse(bodyText),
+        });
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`Timeout after ${reqOpts.timeout}ms`));
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 export async function ensureCookie(forceRefresh = false) {
   const now = Date.now();
   if (!forceRefresh && currentCookie && now < cookieExpiresAt) {
@@ -23,17 +68,17 @@ export async function ensureCookie(forceRefresh = false) {
   }
 
   try {
-    const res = await fetch(`${BASE_URL}/api/config`, {
+    const res = await doRequest(`${BASE_URL}/api/config`, {
       headers: {
         'User-Agent': USER_AGENT,
         'Accept': 'application/json, text/plain, */*',
         'Referer': `${BASE_URL}/en`,
       },
-      agent,
     });
-    const sc = res.headers.get('set-cookie');
+    const sc = res.headers['set-cookie'];
     if (sc) {
-      currentCookie = sc.split(';')[0];
+      const cookieStr = Array.isArray(sc) ? sc[0] : sc;
+      currentCookie = cookieStr.split(';')[0];
       cookieExpiresAt = now + 6 * 3600 * 1000; // 6 hours
     }
   } catch (e) {
@@ -53,7 +98,7 @@ export async function fetchApi(path, retryOn412 = true) {
   };
   if (cookie) headers['Cookie'] = cookie;
 
-  const res = await fetch(url, { headers, agent });
+  const res = await doRequest(url, { headers });
 
   if (res.status === 412 && retryOn412) {
     await ensureCookie(true);
@@ -77,7 +122,7 @@ export async function fetchTextWithCookie(url, retryOn412 = true) {
   };
   if (cookie) headers['Cookie'] = cookie;
 
-  const res = await fetch(fullUrl, { headers, agent });
+  const res = await doRequest(fullUrl, { headers });
 
   if (res.status === 412 && retryOn412) {
     await ensureCookie(true);
