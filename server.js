@@ -1,10 +1,13 @@
 import http from 'node:http';
+import https from 'node:https';
 import { manifest } from './src/manifest.js';
 import { getCatalog, getMeta, getStreams, playResolve } from './src/addon.js';
 import { log } from './src/http.js';
 
 const PORT = parseInt(process.env.PORT || '7040', 10);
 const HOST = process.env.HOST || '0.0.0.0';
+
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -94,17 +97,77 @@ const server = http.createServer(async (req, res) => {
       const result = await playResolve({ slug, ep });
 
       if (result.playlist) {
+        // Rewrite segment URLs to pass through /seg proxy with spoofed browser User-Agent
+        // so VLC / ExoPlayer / LibVLC can NEVER get 403 Forbidden by Cloudflare
+        const rewritten = result.playlist
+          .split('\n')
+          .map((line) => {
+            const l = line.trim();
+            if (l.startsWith('http://') || l.startsWith('https://')) {
+              return `${origin}/seg?u=${encodeURIComponent(l)}`;
+            }
+            return line;
+          })
+          .join('\n');
+
         setCors(res);
         res.writeHead(200, {
           'Content-Type': 'application/vnd.apple.mpegurl',
           'Cache-Control': 'no-store',
         });
-        return res.end(result.playlist);
+        return res.end(rewritten);
       }
 
       setCors(res);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       return res.end('Stream not found');
+    }
+
+    // /seg?u=<encoded_cdn_url> — Proxy segment with browser User-Agent to bypass VLC blocks
+    if (parts.length === 1 && parts[0] === 'seg') {
+      const targetUrl = url.searchParams.get('u');
+      if (!targetUrl || !targetUrl.startsWith('http')) {
+        setCors(res);
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        return res.end('Missing or invalid segment URL');
+      }
+
+      const parsedTarget = new URL(targetUrl);
+      const client = parsedTarget.protocol === 'https:' ? https : http;
+
+      const proxyReq = client.request(
+        targetUrl,
+        {
+          method: 'GET',
+          headers: {
+            'User-Agent': USER_AGENT,
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Referer': 'https://dramadunyam.com/',
+          },
+        },
+        (proxyRes) => {
+          setCors(res);
+          res.writeHead(proxyRes.statusCode, {
+            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t',
+            'Content-Length': proxyRes.headers['content-length'] || undefined,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'public, max-age=86400',
+          });
+          proxyRes.pipe(res);
+        },
+      );
+
+      proxyReq.on('error', (err) => {
+        log('Segment proxy error:', err.message);
+        if (!res.headersSent) {
+          setCors(res);
+          res.writeHead(502, { 'Content-Type': 'text/plain' });
+          res.end('Bad Gateway');
+        }
+      });
+
+      return proxyReq.end();
     }
 
     // Fallback 404

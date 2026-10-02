@@ -67,19 +67,23 @@ export async function ensureCookie(forceRefresh = false) {
     return currentCookie;
   }
 
+  // Obtain ticket cookie by visiting the English home page
   try {
-    const res = await doRequest(`${BASE_URL}/api/config`, {
+    const res = await doRequest(`${BASE_URL}/en`, {
       headers: {
         'User-Agent': USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': `${BASE_URL}/en`,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
     });
     const sc = res.headers['set-cookie'];
     if (sc) {
-      const cookieStr = Array.isArray(sc) ? sc[0] : sc;
-      currentCookie = cookieStr.split(';')[0];
-      cookieExpiresAt = now + 6 * 3600 * 1000; // 6 hours
+      const cookieArr = Array.isArray(sc) ? sc : [sc];
+      const bilet = cookieArr.find(c => c.includes('dd_bilet='));
+      if (bilet) {
+        currentCookie = bilet.split(';')[0];
+        cookieExpiresAt = now + 6 * 3600 * 1000; // 6 hours
+        return currentCookie;
+      }
     }
   } catch (e) {
     log('ensureCookie error:', e.message);
