@@ -94,10 +94,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { streams }, { maxAge: 300 });
     }
 
-    // /play?slug=...&ep=...
-    if (parts.length === 1 && parts[0] === 'play') {
-      const slug = url.searchParams.get('slug');
-      const ep = parseInt(url.searchParams.get('ep') || '1', 10);
+    // /hls/:slug/:ep/playlist.m3u8 or /play?slug=...&ep=...
+    const isHlsPath = parts.length === 4 && parts[0] === 'hls' && parts[3].endsWith('.m3u8');
+    const isPlayQuery = parts.length === 1 && parts[0] === 'play';
+
+    if (isHlsPath || isPlayQuery) {
+      const slug = isHlsPath ? parts[1] : url.searchParams.get('slug');
+      const ep = isHlsPath ? parseInt(parts[2], 10) : parseInt(url.searchParams.get('ep') || '1', 10);
       const result = await playResolve({ slug, ep });
 
       if (result.playlist) {
