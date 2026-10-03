@@ -37,7 +37,7 @@ function sendJson(res, data, { maxAge = 600 } = {}) {
 function serveBuffer(req, res, buf, contentType) {
   setCors(res);
   const total = buf.length;
-  const m = req.headers.range && /^bytes=(\d*)-(\\d*)$/.exec(req.headers.range);
+  const m = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
   if (m) {
     let start = m[1] === '' ? null : parseInt(m[1], 10);
     let end = m[2] === '' ? null : parseInt(m[2], 10);
