@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { spawn } from 'node:child_process';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { manifest } from './src/manifest.js';
 import { getCatalog, getMeta, getStreams, playResolve } from './src/addon.js';
@@ -84,6 +85,41 @@ function pageContext(req) {
   const proto = req.headers['x-forwarded-proto'] || (isLocal ? 'http' : 'https');
   const prefix = (req.headers['x-forwarded-prefix'] || '').replace(/\/+$/, '');
   return { host, proto, prefix };
+}
+
+// Re-encode audio to standard AAC-LC stereo with English language tag.
+// DramaDünyam's upstream files encode audio as HE-AAC (v2/SBR) inside MPEG-TS
+// with und (undefined) language, causing ExoPlayer/Fusion on Android/mobile
+// to show "Unknown" audio, fail decoding, and stutter video frames.
+function transcodeAudio(inputBuf) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn(
+      'ffmpeg',
+      [
+        '-i', 'pipe:0',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '64k',
+        '-metadata:s:a:0', 'language=eng',
+        '-f', 'mpegts',
+        'pipe:1',
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'] },
+    );
+
+    const chunks = [];
+    ff.stdout.on('data', (c) => chunks.push(c));
+    ff.on('error', (err) => reject(err));
+    ff.on('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}`));
+      }
+    });
+
+    ff.stdin.end(inputBuf);
+  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -226,13 +262,20 @@ const server = http.createServer(async (req, res) => {
 
           const chunks = [];
           proxyRes.on('data', (c) => chunks.push(c));
-          proxyRes.on('end', () => {
+          proxyRes.on('end', async () => {
             let buf = Buffer.concat(chunks);
             try {
               buf = stripId3(buf);
             } catch (e) {
               log('stripId3 error:', e.message);
             }
+
+            try {
+              buf = await transcodeAudio(buf);
+            } catch (e) {
+              log('transcodeAudio error (falling back to original buffer):', e.message);
+            }
+
             return serveBuffer(req, res, buf, 'video/mp2t');
           });
         },

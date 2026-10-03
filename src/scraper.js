@@ -159,14 +159,18 @@ export async function searchSeries(query) {
 function formatCatalogItem(item) {
   const slug = item.slug || item.id;
   const genres = cleanGenres(item.tags || item.genre);
+  const poster = cleanPoster(item.cover);
   return {
     id: `dd:${slug}`,
     type: 'series',
     name: item.title,
-    poster: cleanPoster(item.cover),
+    poster: poster || undefined,
+    background: poster || undefined,
+    logo: poster || undefined,
     posterShape: 'poster',
     description: item.description || (item.platform ? `Platform: ${item.platform}` : undefined),
     genres: genres.length ? genres : undefined,
+    releaseInfo: item.release_date || (item.platform ? `${item.platform}` : 'Short Drama'),
   };
 }
 
@@ -204,7 +208,7 @@ export async function getSeriesMeta(slug) {
         logo: poster || undefined,
         description: data.description || `${data.title} (${data.platform || 'Short Drama'})`,
         genres: genres.length ? genres : undefined,
-        releaseInfo: data.release_date || undefined,
+        releaseInfo: data.release_date || (data.platform ? `${data.platform}` : 'Short Drama'),
         videos,
       };
     } catch (e) {
