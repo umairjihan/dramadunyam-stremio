@@ -145,11 +145,11 @@ const server = http.createServer(async (req, res) => {
       if (result.playlist) {
         // Rewrite segment URLs to /seg/<base64url>.ts so FFmpeg / Lavf / Fusion
         // strictly recognizes the .ts extension in allowed_segment_extensions!
-        // Also inject #EXT-X-PLAYLIST-TYPE:VOD so mobile players know this is VOD (not LIVE)
-        // and start playing from timestamp 00:00 instead of jumping ahead to the live edge.
+        // Inject VOD tag and explicitly declare #EXT-X-START:TIME_OFFSET=0,PRECISE=YES
+        // so ExoPlayer / Fusion seeks strictly to 00:00 instead of stalling on non-zero PTS.
         const lines = result.playlist.split('\n');
         const outputLines = [];
-        let vodInjected = false;
+        let headerInjected = false;
 
         for (const line of lines) {
           const l = line.trim();
@@ -158,9 +158,10 @@ const server = http.createServer(async (req, res) => {
             outputLines.push(`${origin}/seg/${b64}.ts`);
           } else {
             outputLines.push(line);
-            if (!vodInjected && l.startsWith('#EXT-X-VERSION')) {
+            if (!headerInjected && l.startsWith('#EXT-X-VERSION')) {
               outputLines.push('#EXT-X-PLAYLIST-TYPE:VOD');
-              vodInjected = true;
+              outputLines.push('#EXT-X-START:TIME_OFFSET=0,PRECISE=YES');
+              headerInjected = true;
             }
           }
         }
