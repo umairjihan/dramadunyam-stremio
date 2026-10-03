@@ -37,7 +37,7 @@ function sendJson(res, data, { maxAge = 600 } = {}) {
 function serveBuffer(req, res, buf, contentType) {
   setCors(res);
   const total = buf.length;
-  const m = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+  const m = req.headers.range && /^bytes=(\d*)-(\\d*)$/.exec(req.headers.range);
   if (m) {
     let start = m[1] === '' ? null : parseInt(m[1], 10);
     let end = m[2] === '' ? null : parseInt(m[2], 10);
@@ -143,13 +143,15 @@ const server = http.createServer(async (req, res) => {
       const result = await playResolve({ slug, ep });
 
       if (result.playlist) {
-        // Rewrite segment URLs to pass through /seg proxy
+        // Rewrite segment URLs to /seg/<base64url>.ts so FFmpeg / Lavf / Fusion
+        // strictly recognizes the .ts extension in allowed_segment_extensions!
         const rewritten = result.playlist
           .split('\n')
           .map((line) => {
             const l = line.trim();
             if (l.startsWith('http://') || l.startsWith('https://')) {
-              return `${origin}/seg?u=${encodeURIComponent(l)}`;
+              const b64 = Buffer.from(l, 'utf8').toString('base64url');
+              return `${origin}/seg/${b64}.ts`;
             }
             return line;
           })
@@ -168,9 +170,21 @@ const server = http.createServer(async (req, res) => {
       return res.end('Stream not found');
     }
 
-    // /seg?u=<encoded_cdn_url> — Proxy segment with byte-range support & ID3 stripping for Fusion
-    if (parts.length === 1 && parts[0] === 'seg') {
-      const targetUrl = url.searchParams.get('u');
+    // /seg/<base64url>.ts (or /seg?u=...) — Proxy segment with byte-range support & ID3 stripping
+    const isSegPath = parts.length === 2 && parts[0] === 'seg' && parts[1].endsWith('.ts');
+    const isSegQuery = parts.length === 1 && parts[0] === 'seg';
+
+    if (isSegPath || isSegQuery) {
+      let targetUrl = '';
+      if (isSegPath) {
+        const rawB64 = parts[1].slice(0, -'.ts'.length);
+        try {
+          targetUrl = Buffer.from(rawB64, 'base64url').toString('utf8');
+        } catch {}
+      } else {
+        targetUrl = url.searchParams.get('u') || '';
+      }
+
       if (!targetUrl || !targetUrl.startsWith('http')) {
         setCors(res);
         res.writeHead(400, { 'Content-Type': 'text/plain' });
