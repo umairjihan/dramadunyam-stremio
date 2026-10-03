@@ -60,8 +60,6 @@ export async function getStreams({ type, id, playBase = '' }) {
   const episode = idToEpisode(id);
   if (!slug) return [];
 
-  // Use a canonical .m3u8 extension in the path so players like VLC, ExoPlayer,
-  // AVPlayer and Fusion identify the container format immediately.
   const playUrl = `${playBase}/hls/${encodeURIComponent(slug)}/${episode}/playlist.m3u8`;
 
   return [
@@ -71,7 +69,7 @@ export async function getStreams({ type, id, playBase = '' }) {
       url: playUrl,
       behaviorHints: {
         bingeGroup: `dramadunyam-${slug}`,
-        notWebReady: false,
+        notWebReady: true,
       },
     },
   ];
