@@ -145,17 +145,27 @@ const server = http.createServer(async (req, res) => {
       if (result.playlist) {
         // Rewrite segment URLs to /seg/<base64url>.ts so FFmpeg / Lavf / Fusion
         // strictly recognizes the .ts extension in allowed_segment_extensions!
-        const rewritten = result.playlist
-          .split('\n')
-          .map((line) => {
-            const l = line.trim();
-            if (l.startsWith('http://') || l.startsWith('https://')) {
-              const b64 = Buffer.from(l, 'utf8').toString('base64url');
-              return `${origin}/seg/${b64}.ts`;
+        // Also inject #EXT-X-PLAYLIST-TYPE:VOD so mobile players know this is VOD (not LIVE)
+        // and start playing from timestamp 00:00 instead of jumping ahead to the live edge.
+        const lines = result.playlist.split('\n');
+        const outputLines = [];
+        let vodInjected = false;
+
+        for (const line of lines) {
+          const l = line.trim();
+          if (l.startsWith('http://') || l.startsWith('https://')) {
+            const b64 = Buffer.from(l, 'utf8').toString('base64url');
+            outputLines.push(`${origin}/seg/${b64}.ts`);
+          } else {
+            outputLines.push(line);
+            if (!vodInjected && l.startsWith('#EXT-X-VERSION')) {
+              outputLines.push('#EXT-X-PLAYLIST-TYPE:VOD');
+              vodInjected = true;
             }
-            return line;
-          })
-          .join('\n');
+          }
+        }
+
+        const rewritten = outputLines.join('\n');
 
         setCors(res);
         res.writeHead(200, {
