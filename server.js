@@ -3,6 +3,7 @@ import https from 'node:https';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { manifest } from './src/manifest.js';
 import { getCatalog, getMeta, getStreams, playResolve } from './src/addon.js';
+import { stripId3 } from './src/tsfilter.js';
 import { log } from './src/http.js';
 
 const PORT = parseInt(process.env.PORT || '7040', 10);
@@ -12,6 +13,9 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 
 const SOCKS_PROXY = process.env.SOCKS_PROXY || '';
 const proxyAgent = SOCKS_PROXY ? new SocksProxyAgent(SOCKS_PROXY) : undefined;
+
+process.on('uncaughtException', (e) => log('uncaughtException', e?.message || e));
+process.on('unhandledRejection', (e) => log('unhandledRejection', e?.message || e));
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -28,6 +32,41 @@ function sendJson(res, data, { maxAge = 600 } = {}) {
     'Cache-Control': `public, max-age=${maxAge}`,
   });
   res.end(json);
+}
+
+function serveBuffer(req, res, buf, contentType) {
+  setCors(res);
+  const total = buf.length;
+  const m = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+  if (m) {
+    let start = m[1] === '' ? null : parseInt(m[1], 10);
+    let end = m[2] === '' ? null : parseInt(m[2], 10);
+    if (start === null) {
+      start = Math.max(0, total - (end || 0));
+      end = total - 1;
+    } else {
+      end = end === null ? total - 1 : Math.min(end, total - 1);
+    }
+    if (start > end || start >= total) {
+      res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+      return res.end();
+    }
+    res.writeHead(206, {
+      'Content-Type': contentType,
+      'Content-Range': `bytes ${start}-${end}/${total}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': end - start + 1,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(req.method === 'HEAD' ? undefined : buf.subarray(start, end + 1));
+  }
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': total,
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+  });
+  return res.end(req.method === 'HEAD' ? undefined : buf);
 }
 
 function parseExtra(seg) {
@@ -129,7 +168,7 @@ const server = http.createServer(async (req, res) => {
       return res.end('Stream not found');
     }
 
-    // /seg?u=<encoded_cdn_url> — Proxy segment with proxyAgent + browser User-Agent
+    // /seg?u=<encoded_cdn_url> — Proxy segment with byte-range support & ID3 stripping for Fusion
     if (parts.length === 1 && parts[0] === 'seg') {
       const targetUrl = url.searchParams.get('u');
       if (!targetUrl || !targetUrl.startsWith('http')) {
@@ -154,17 +193,23 @@ const server = http.createServer(async (req, res) => {
           },
         },
         (proxyRes) => {
-          setCors(res);
-          const outHeaders = {
-            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t',
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=86400',
-          };
-          if (proxyRes.headers['content-length']) {
-            outHeaders['Content-Length'] = proxyRes.headers['content-length'];
+          if (proxyRes.statusCode !== 200 && proxyRes.statusCode !== 206) {
+            setCors(res);
+            res.writeHead(proxyRes.statusCode);
+            return res.end();
           }
-          res.writeHead(proxyRes.statusCode, outHeaders);
-          proxyRes.pipe(res);
+
+          const chunks = [];
+          proxyRes.on('data', (c) => chunks.push(c));
+          proxyRes.on('end', () => {
+            let buf = Buffer.concat(chunks);
+            try {
+              buf = stripId3(buf);
+            } catch (e) {
+              log('stripId3 error:', e.message);
+            }
+            return serveBuffer(req, res, buf, 'video/mp2t');
+          });
         },
       );
 
