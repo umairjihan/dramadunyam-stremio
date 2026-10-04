@@ -5,7 +5,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { manifest } from './src/manifest.js';
 import { getCatalog, getMeta, getStreams, playResolve } from './src/addon.js';
 import { stripId3 } from './src/tsfilter.js';
-import { log } from './src/http.js';
+import { log, fetchStream } from './src/http.js';
 
 const PORT = parseInt(process.env.PORT || '7040', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -85,6 +85,44 @@ function pageContext(req) {
   const proto = req.headers['x-forwarded-proto'] || (isLocal ? 'http' : 'https');
   const prefix = (req.headers['x-forwarded-prefix'] || '').replace(/\/+$/, '');
   return { host, proto, prefix };
+}
+
+function rewriteHlsPlaylist(playlistText, targetBaseUrl, origin) {
+  const isMaster = playlistText.includes('#EXT-X-STREAM-INF');
+  const lines = playlistText.split('\n');
+  const out = [];
+
+  for (const line of lines) {
+    let l = line;
+    // Replace URI="..." in tags (like #EXT-X-MEDIA:...URI="...", #EXT-X-MAP:URI="...")
+    l = l.replace(/URI="([^"]+)"/g, (match, rel) => {
+      const abs = (rel.startsWith('http://') || rel.startsWith('https://'))
+        ? rel
+        : new URL(rel, targetBaseUrl).toString();
+      if (isMaster && abs.includes('.m3u8')) {
+        const b64 = Buffer.from(abs, 'utf8').toString('base64url');
+        return `URI="${origin}/sub/${b64}.m3u8"`;
+      }
+      return `URI="${abs}"`;
+    });
+
+    const trimmed = l.trim();
+    if (trimmed && !trimmed.startsWith('#')) {
+      const abs = (trimmed.startsWith('http://') || trimmed.startsWith('https://'))
+        ? trimmed
+        : new URL(trimmed, targetBaseUrl).toString();
+      if (isMaster && abs.includes('.m3u8')) {
+        const b64 = Buffer.from(abs, 'utf8').toString('base64url');
+        out.push(`${origin}/sub/${b64}.m3u8`);
+      } else {
+        out.push(abs);
+      }
+    } else {
+      out.push(l);
+    }
+  }
+
+  return out.join('\n');
 }
 
 // Re-encode audio to standard AAC-LC stereo with English language tag.
@@ -178,45 +216,49 @@ const server = http.createServer(async (req, res) => {
       const ep = isHlsPath ? parseInt(parts[2], 10) : parseInt(url.searchParams.get('ep') || '1', 10);
       const result = await playResolve({ slug, ep });
 
-      if (result.redirectUrl) {
-        setCors(res);
-        res.writeHead(302, {
-          'Location': result.redirectUrl,
-          'Cache-Control': 'no-store',
-        });
-        return res.end();
-      }
-
       if (result.playlist) {
-        // Rewrite segment URLs to /seg/<base64url>.ts so FFmpeg / Lavf / Fusion
-        // strictly recognizes the .ts extension in allowed_segment_extensions!
-        // Inject VOD tag and explicitly declare #EXT-X-START:TIME_OFFSET=0,PRECISE=YES
-        // so ExoPlayer / Fusion seeks strictly to 00:00 instead of stalling on non-zero PTS.
-        const lines = result.playlist.split('\n');
-        const outputLines = [];
-        let headerInjected = false;
+        // If it was a legacy .ts stream (no redirectUrl, from cdn2.dramaflix.net),
+        // proxy segments through /seg/<b64>.ts for HE-AAC audio transcoding.
+        // Otherwise (fMP4, crazymaple, goodshort), rewrite relative URLs to absolute CDN URLs
+        // and route sub-playlists through /sub/<b64>.m3u8 to eliminate 302 redirects & attachment headers.
+        if (!result.redirectUrl) {
+          const lines = result.playlist.split('\n');
+          const outputLines = [];
+          let headerInjected = false;
 
-        for (const line of lines) {
-          const l = line.trim();
-          if (l.startsWith('http://') || l.startsWith('https://')) {
-            const b64 = Buffer.from(l, 'utf8').toString('base64url');
-            outputLines.push(`${origin}/seg/${b64}.ts`);
-          } else {
-            outputLines.push(line);
-            if (!headerInjected && l.startsWith('#EXT-X-VERSION')) {
-              outputLines.push('#EXT-X-PLAYLIST-TYPE:VOD');
-              outputLines.push('#EXT-X-START:TIME_OFFSET=0,PRECISE=YES');
-              headerInjected = true;
+          for (const line of lines) {
+            const l = line.trim();
+            if (l.startsWith('http://') || l.startsWith('https://')) {
+              const b64 = Buffer.from(l, 'utf8').toString('base64url');
+              outputLines.push(`${origin}/seg/${b64}.ts`);
+            } else {
+              outputLines.push(line);
+              if (!headerInjected && l.startsWith('#EXT-X-VERSION')) {
+                outputLines.push('#EXT-X-PLAYLIST-TYPE:VOD');
+                outputLines.push('#EXT-X-START:TIME_OFFSET=0,PRECISE=YES');
+                headerInjected = true;
+              }
             }
           }
+
+          const rewritten = outputLines.join('\n');
+          setCors(res);
+          res.writeHead(200, {
+            'Content-Type': 'application/vnd.apple.mpegurl',
+            'Cache-Control': 'no-store',
+            'Accept-Ranges': 'bytes',
+          });
+          return res.end(rewritten);
         }
 
-        const rewritten = outputLines.join('\n');
+        const targetBase = result.redirectUrl || result.directUrl;
+        const rewritten = rewriteHlsPlaylist(result.playlist, targetBase, origin);
 
         setCors(res);
         res.writeHead(200, {
           'Content-Type': 'application/vnd.apple.mpegurl',
           'Cache-Control': 'no-store',
+          'Accept-Ranges': 'bytes',
         });
         return res.end(rewritten);
       }
@@ -224,6 +266,40 @@ const server = http.createServer(async (req, res) => {
       setCors(res);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       return res.end('Stream not found');
+    }
+
+    // /sub/<base64url>.m3u8 — Proxy HLS sub-playlist to strip attachment headers & provide clean 200 HLS
+    const isSubPath = parts.length === 2 && parts[0] === 'sub' && parts[1].endsWith('.m3u8');
+    if (isSubPath) {
+      const rawB64 = parts[1].slice(0, -'.m3u8'.length);
+      let targetUrl = '';
+      try {
+        targetUrl = Buffer.from(rawB64, 'base64url').toString('utf8');
+      } catch {}
+
+      if (!targetUrl || !targetUrl.startsWith('http')) {
+        setCors(res);
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        return res.end('Missing or invalid sub-playlist URL');
+      }
+
+      const streamRes = await fetchStream(targetUrl);
+      if (!streamRes || !streamRes.playlist) {
+        setCors(res);
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('Sub-playlist not found');
+      }
+
+      const finalBase = streamRes.finalUrl || targetUrl;
+      const rewritten = rewriteHlsPlaylist(streamRes.playlist, finalBase, origin);
+
+      setCors(res);
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.apple.mpegurl',
+        'Cache-Control': 'no-store',
+        'Accept-Ranges': 'bytes',
+      });
+      return res.end(rewritten);
     }
 
     // /seg/<base64url>.ts (or /seg?u=...) — Proxy segment with byte-range support & ID3 stripping
