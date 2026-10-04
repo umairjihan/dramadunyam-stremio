@@ -242,25 +242,12 @@ const server = http.createServer(async (req, res) => {
           }
 
           const rewritten = outputLines.join('\n');
-          setCors(res);
-          res.writeHead(200, {
-            'Content-Type': 'application/vnd.apple.mpegurl',
-            'Cache-Control': 'no-store',
-            'Accept-Ranges': 'bytes',
-          });
-          return res.end(rewritten);
+          return serveBuffer(req, res, Buffer.from(rewritten, 'utf8'), 'application/vnd.apple.mpegurl');
         }
 
         const targetBase = result.redirectUrl || result.directUrl;
         const rewritten = rewriteHlsPlaylist(result.playlist, targetBase, origin);
-
-        setCors(res);
-        res.writeHead(200, {
-          'Content-Type': 'application/vnd.apple.mpegurl',
-          'Cache-Control': 'no-store',
-          'Accept-Ranges': 'bytes',
-        });
-        return res.end(rewritten);
+        return serveBuffer(req, res, Buffer.from(rewritten, 'utf8'), 'application/vnd.apple.mpegurl');
       }
 
       setCors(res);
@@ -292,14 +279,7 @@ const server = http.createServer(async (req, res) => {
 
       const finalBase = streamRes.finalUrl || targetUrl;
       const rewritten = rewriteHlsPlaylist(streamRes.playlist, finalBase, origin);
-
-      setCors(res);
-      res.writeHead(200, {
-        'Content-Type': 'application/vnd.apple.mpegurl',
-        'Cache-Control': 'no-store',
-        'Accept-Ranges': 'bytes',
-      });
-      return res.end(rewritten);
+      return serveBuffer(req, res, Buffer.from(rewritten, 'utf8'), 'application/vnd.apple.mpegurl');
     }
 
     // /seg/<base64url>.ts (or /seg?u=...) — Proxy segment with byte-range support & ID3 stripping
