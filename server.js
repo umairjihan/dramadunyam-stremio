@@ -169,14 +169,23 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { streams }, { maxAge: 300 });
     }
 
-    // /hls/:slug/:ep/playlist.m3u8 or /play?slug=...&ep=...
-    const isHlsPath = parts.length === 4 && parts[0] === 'hls' && parts[3].endsWith('.m3u8');
+    // /hls/:slug/:ep/playlist.m3u8 or /hls/:slug/:ep/:filename.m3u8 or /play?slug=...&ep=...
+    const isHlsPath = parts.length >= 4 && parts[0] === 'hls' && parts[parts.length - 1].endsWith('.m3u8');
     const isPlayQuery = parts.length === 1 && parts[0] === 'play';
 
     if (isHlsPath || isPlayQuery) {
       const slug = isHlsPath ? parts[1] : url.searchParams.get('slug');
       const ep = isHlsPath ? parseInt(parts[2], 10) : parseInt(url.searchParams.get('ep') || '1', 10);
       const result = await playResolve({ slug, ep });
+
+      if (result.redirectUrl) {
+        setCors(res);
+        res.writeHead(302, {
+          'Location': result.redirectUrl,
+          'Cache-Control': 'no-store',
+        });
+        return res.end();
+      }
 
       if (result.playlist) {
         // Rewrite segment URLs to /seg/<base64url>.ts so FFmpeg / Lavf / Fusion

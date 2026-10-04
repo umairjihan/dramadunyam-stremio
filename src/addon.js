@@ -12,6 +12,7 @@ import {
   idToSlug,
   idToEpisode,
 } from './scraper.js';
+import { metaCache } from './caches.js';
 import { log } from './http.js';
 
 export async function getCatalog({ type, id, extra }) {
@@ -60,15 +61,24 @@ export async function getStreams({ type, id, playBase = '' }) {
   const episode = idToEpisode(id);
   if (!slug) return [];
 
-  const playUrl = `${playBase}/hls/${encodeURIComponent(slug)}/${episode}/playlist.m3u8`;
+  const cachedMeta = metaCache.get(`meta:${slug}`);
+  const title = cachedMeta?.name || slug
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+
+  const safeTitle = title.replace(/[/\\?%*:|"<>]/g, '').trim();
+  const filename = `${safeTitle} - Episode ${episode}.m3u8`;
+  const playUrl = `${playBase}/hls/${encodeURIComponent(slug)}/${episode}/${encodeURIComponent(filename)}`;
 
   return [
     {
       name: 'DramaDünyam\nHLS',
-      title: `DramaDünyam · Episode ${episode} (Direct Stream)`,
+      title: `${title} · Episode ${episode}`,
       url: playUrl,
       behaviorHints: {
         bingeGroup: `dramadunyam-${slug}`,
+        filename,
         notWebReady: true,
       },
     },
@@ -77,6 +87,6 @@ export async function getStreams({ type, id, playBase = '' }) {
 
 export async function playResolve({ slug, ep }) {
   const result = await resolveEpisodeStream(slug, ep);
-  if (!result) return { playlist: null };
-  return { playlist: result.playlist };
+  if (!result) return { playlist: null, redirectUrl: null };
+  return result;
 }

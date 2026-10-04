@@ -1,5 +1,5 @@
 // DramaDünyam Scraper / API client
-import { fetchApi, fetchTextWithCookie, log } from './http.js';
+import { fetchApi, fetchTextWithCookie, fetchStream, log } from './http.js';
 import { catalogCache, metaCache, streamCache } from './caches.js';
 
 const DD_ORIGIN = 'https://dramadunyam.com';
@@ -234,14 +234,24 @@ export async function resolveEpisodeStream(slug, episodeNum) {
       if (!numericId) return null;
 
       const hlsPath = `/hls/${numericId}/${episodeNum}/playlist.m3u8`;
-      const playlistText = await fetchTextWithCookie(hlsPath);
+      const streamRes = await fetchStream(hlsPath);
 
-      if (!playlistText || !playlistText.includes('#EXTM3U')) {
+      if (!streamRes) return null;
+
+      if (streamRes.redirected && streamRes.finalUrl) {
+        return {
+          redirectUrl: streamRes.finalUrl,
+          playlist: streamRes.playlist,
+          directUrl: streamRes.finalUrl,
+        };
+      }
+
+      if (!streamRes.playlist || !streamRes.playlist.includes('#EXTM3U')) {
         return null;
       }
 
       return {
-        playlist: playlistText,
+        playlist: streamRes.playlist,
         directUrl: `${DD_ORIGIN}${hlsPath}`,
       };
     } catch (e) {

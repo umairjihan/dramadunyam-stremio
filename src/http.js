@@ -19,6 +19,9 @@ export function log(...args) {
 }
 
 function doRequest(urlStr, options = {}) {
+  const maxRedirects = options.maxRedirects ?? 5;
+  const redirectChain = options.redirectChain || [];
+
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const isHttps = u.protocol === 'https:';
@@ -30,12 +33,47 @@ function doRequest(urlStr, options = {}) {
       port: u.port || (isHttps ? 443 : 80),
       path: u.pathname + u.search,
       method: options.method || 'GET',
-      headers: options.headers || {},
+      headers: { ...(options.headers || {}) },
       agent: agent || undefined,
       timeout: options.timeoutMs || 10000,
     };
 
     const req = client.request(reqOpts, (res) => {
+      if (
+        res.statusCode >= 300 &&
+        res.statusCode < 400 &&
+        res.headers.location &&
+        options.followRedirects !== false
+      ) {
+        if (redirectChain.length >= maxRedirects) {
+          res.resume();
+          return reject(new Error(`Too many redirects (>${maxRedirects}) for ${urlStr}`));
+        }
+
+        const nextUrl = new URL(res.headers.location, urlStr).toString();
+        redirectChain.push(nextUrl);
+
+        res.resume();
+
+        const nextHeaders = { ...options.headers };
+        delete nextHeaders.host;
+        delete nextHeaders.Host;
+
+        const nextMethod =
+          (res.statusCode === 303 || ((res.statusCode === 301 || res.statusCode === 302) && reqOpts.method === 'POST'))
+            ? 'GET'
+            : (options.method || 'GET');
+
+        return resolve(
+          doRequest(nextUrl, {
+            ...options,
+            method: nextMethod,
+            headers: nextHeaders,
+            redirectChain,
+          })
+        );
+      }
+
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
@@ -45,6 +83,8 @@ function doRequest(urlStr, options = {}) {
           status: res.statusCode,
           ok: res.statusCode >= 200 && res.statusCode < 300,
           headers: res.headers,
+          finalUrl: urlStr,
+          redirectUrls: redirectChain,
           text: async () => bodyText,
           json: async () => JSON.parse(bodyText),
         });
@@ -138,4 +178,33 @@ export async function fetchTextWithCookie(url, retryOn412 = true) {
   }
 
   return res.text();
+}
+
+export async function fetchStream(url, retryOn412 = true) {
+  const cookie = await ensureCookie();
+  const fullUrl = url.startsWith('http') ? url : `${BASE_URL}${url}`;
+
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Referer': `${BASE_URL}/en`,
+  };
+  if (cookie) headers['Cookie'] = cookie;
+
+  const res = await doRequest(fullUrl, { headers });
+
+  if (res.status === 412 && retryOn412) {
+    await ensureCookie(true);
+    return fetchStream(url, false);
+  }
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} for ${url}`);
+  }
+
+  const text = await res.text();
+  return {
+    playlist: text,
+    finalUrl: res.finalUrl,
+    redirected: (res.redirectUrls || []).length > 0,
+  };
 }
