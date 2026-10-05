@@ -228,11 +228,33 @@ export async function resolveEpisodeStream(slug, episodeNum) {
       const meta = await getSeriesMeta(slug);
       if (!meta) return null;
 
-      // Need the numeric series ID for /hls/:id/:ep/playlist.m3u8
+      // Need the numeric series ID for /hls/:id/:ep/playlist.m3u8 or /play/:id/:ep
       const data = await fetchApi(`/api/series/${encodeURIComponent(slug)}?lang=en`);
       const numericId = data?.id;
       if (!numericId) return null;
 
+      // 1. Try modern v4 /play/:id/:ep endpoint (added by DramaDünyam in v4.0)
+      try {
+        const playData = await fetchApi(`/play/${encodeURIComponent(numericId)}/${episodeNum}`);
+        if (playData && playData.url) {
+          const rawUrl = playData.url;
+          const streamUrl = rawUrl.startsWith('http') ? rawUrl : `${DD_ORIGIN}${rawUrl}`;
+          const streamRes = await fetchStream(streamUrl);
+          if (streamRes && streamRes.playlist && streamRes.playlist.includes('#EXTM3U')) {
+            const finalBase = streamRes.finalUrl || streamUrl;
+            return {
+              redirectUrl: finalBase,
+              playlist: streamRes.playlist,
+              directUrl: finalBase,
+              subtitles: playData.altyazilar || [],
+            };
+          }
+        }
+      } catch (err) {
+        log('v4 /play fallback for', slug, episodeNum, err.message);
+      }
+
+      // 2. Fallback to /hls/:id/:ep/playlist.m3u8
       const hlsPath = `/hls/${numericId}/${episodeNum}/playlist.m3u8`;
       const streamRes = await fetchStream(hlsPath);
 
