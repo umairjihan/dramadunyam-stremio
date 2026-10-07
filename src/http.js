@@ -107,12 +107,13 @@ export async function ensureCookie(forceRefresh = false) {
     return currentCookie;
   }
 
-  // Obtain ticket cookie by visiting the English home page
+  // Obtain ticket cookie from /api/config (official ticket endpoint in DramaDünyam, bypasses Cloudflare challenge)
   try {
-    const res = await doRequest(`${BASE_URL}/en`, {
+    const res = await doRequest(`${BASE_URL}/api/config`, {
       headers: {
         'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': `${BASE_URL}/`,
       },
     });
     const sc = res.headers['set-cookie'];
@@ -126,8 +127,32 @@ export async function ensureCookie(forceRefresh = false) {
       }
     }
   } catch (e) {
-    log('ensureCookie error:', e.message);
+    log('ensureCookie /api/config error:', e.message);
   }
+
+  // Fallback: try visiting /en
+  try {
+    const res = await doRequest(`${BASE_URL}/en`, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': `${BASE_URL}/`,
+      },
+    });
+    const sc = res.headers['set-cookie'];
+    if (sc) {
+      const cookieArr = Array.isArray(sc) ? sc : [sc];
+      const bilet = cookieArr.find(c => c.includes('dd_bilet='));
+      if (bilet) {
+        currentCookie = bilet.split(';')[0];
+        cookieExpiresAt = now + 6 * 3600 * 1000; // 6 hours
+        return currentCookie;
+      }
+    }
+  } catch (e) {
+    log('ensureCookie /en error:', e.message);
+  }
+
   return currentCookie;
 }
 
