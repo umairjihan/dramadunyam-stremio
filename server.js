@@ -103,6 +103,11 @@ function rewriteHlsPlaylist(playlistText, targetBaseUrl, origin) {
         const b64 = Buffer.from(abs, 'utf8').toString('base64url');
         return `URI="${origin}/sub/${b64}.m3u8"`;
       }
+      if (abs.includes('dramadunyam.com') || abs.includes('dramaflix.net')) {
+        const ext = abs.includes('.mp4') ? 'mp4' : 'ts';
+        const b64 = Buffer.from(abs, 'utf8').toString('base64url');
+        return `URI="${origin}/seg/${b64}.${ext}"`;
+      }
       return `URI="${abs}"`;
     });
 
@@ -114,6 +119,10 @@ function rewriteHlsPlaylist(playlistText, targetBaseUrl, origin) {
       if (isMaster && abs.includes('.m3u8')) {
         const b64 = Buffer.from(abs, 'utf8').toString('base64url');
         out.push(`${origin}/sub/${b64}.m3u8`);
+      } else if (abs.includes('dramadunyam.com') || abs.includes('dramaflix.net')) {
+        const ext = abs.includes('.mp4') ? 'mp4' : 'ts';
+        const b64 = Buffer.from(abs, 'utf8').toString('base64url');
+        out.push(`${origin}/seg/${b64}.${ext}`);
       } else {
         out.push(abs);
       }
@@ -282,19 +291,22 @@ const server = http.createServer(async (req, res) => {
       return serveBuffer(req, res, Buffer.from(rewritten, 'utf8'), 'application/vnd.apple.mpegurl');
     }
 
-    // /seg/<base64url>.ts (or /seg?u=...) — Proxy segment with byte-range support & ID3 stripping
-    const isSegPath = parts.length === 2 && parts[0] === 'seg' && parts[1].endsWith('.ts');
+    // /seg/<base64url>.(ts|mp4) (or /seg?u=...) — Proxy segment with byte-range support & ID3 stripping
+    const isSegPath = parts.length === 2 && parts[0] === 'seg' && (parts[1].endsWith('.ts') || parts[1].endsWith('.mp4'));
     const isSegQuery = parts.length === 1 && parts[0] === 'seg';
 
     if (isSegPath || isSegQuery) {
       let targetUrl = '';
+      let isMp4 = false;
       if (isSegPath) {
-        const rawB64 = parts[1].slice(0, -'.ts'.length);
+        isMp4 = parts[1].endsWith('.mp4');
+        const rawB64 = parts[1].slice(0, -(isMp4 ? '.mp4'.length : '.ts'.length));
         try {
           targetUrl = Buffer.from(rawB64, 'base64url').toString('utf8');
         } catch {}
       } else {
         targetUrl = url.searchParams.get('u') || '';
+        isMp4 = targetUrl.includes('.mp4');
       }
 
       if (!targetUrl || !targetUrl.startsWith('http')) {
@@ -315,7 +327,7 @@ const server = http.createServer(async (req, res) => {
             'User-Agent': USER_AGENT,
             'Accept': '*/*',
             'Accept-Encoding': 'identity',
-            'Referer': 'https://dramadunyam.com/',
+            'Referer': 'https://dramadunyam.com/en',
           },
         },
         (proxyRes) => {
@@ -329,19 +341,24 @@ const server = http.createServer(async (req, res) => {
           proxyRes.on('data', (c) => chunks.push(c));
           proxyRes.on('end', async () => {
             let buf = Buffer.concat(chunks);
-            try {
-              buf = stripId3(buf);
-            } catch (e) {
-              log('stripId3 error:', e.message);
+            const contentType = isMp4 ? 'video/mp4' : 'video/mp2t';
+
+            // Only run ID3 stripping and audio transcoding on legacy .ts streams
+            if (!isMp4) {
+              try {
+                buf = stripId3(buf);
+              } catch (e) {
+                log('stripId3 error:', e.message);
+              }
+
+              try {
+                buf = await transcodeAudio(buf);
+              } catch (e) {
+                log('transcodeAudio error (falling back to original buffer):', e.message);
+              }
             }
 
-            try {
-              buf = await transcodeAudio(buf);
-            } catch (e) {
-              log('transcodeAudio error (falling back to original buffer):', e.message);
-            }
-
-            return serveBuffer(req, res, buf, 'video/mp2t');
+            return serveBuffer(req, res, buf, contentType);
           });
         },
       );
